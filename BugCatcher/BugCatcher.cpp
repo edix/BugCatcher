@@ -11,6 +11,8 @@
 //		mov x, [eax + 0x04] oder sonstiges
 //	Falls ja, dann ist das ein Bug!
 // 
+//
+// ida pro reference: http://www.openrce.org/reference_library/ida_sdk
 // 
 //
 
@@ -69,8 +71,56 @@ bool Disasm(ea_t address, qstring& res)
 	return false;
 }
 
+ea_t getJumpAddress(ea_t address)
+{
+	unsigned char buf1[8] = { 0 };
+	ea_t res = BADADDR;
+	if (get_many_bytes(address, buf1, sizeof(buf1)))
+	{
+		if (buf1[0] == 0xEB)
+		{
+			// jmp short
+			res = (address + (unsigned)buf1[1]);
+		}
+		else if (buf1[0] == 0xE9 )
+		{
+			// jmp <dword>
+			res = (address + *(uint32*)&buf1[1]);
+		}
+		else if (buf1[0] == 0xFF)
+		{
+			//
+			// oh god multi byte opcodes..support only call ds:uint32
+			//
+			if (buf1[1] == 0x25)
+			{
+				res = (*(uint32*)&buf1[1]);
+			}
 
-bool findXorEaxRetn(ea_t address, ea_t endaddress)
+		}
+		else
+		{
+			msg("unknown: %u\n", buf1[0]);
+		}
+	}
+	return res;
+}
+
+bool findCommand(qstring &str, const char* szStr1)
+{
+	if (strstr(str.c_str(), szStr1) > 0)
+		return true;
+	return false;
+}
+
+bool findCommand(qstring &str, const char* szStr1, const char* szStr2)
+{
+	if (strstr(str.c_str(), szStr1) > 0 && strstr(str.c_str(), szStr2) > 0)
+		return true;
+	return false;
+}
+
+bool findXorEaxRetn(ea_t address, ea_t endaddress, qstring &disasm)
 {
 	//
 	// search for:
@@ -81,7 +131,9 @@ bool findXorEaxRetn(ea_t address, ea_t endaddress)
 	//
 	bool fResult = false;
 	ea_t address2;
-	qstring disasm, disasm2;
+	qstring disasm2;
+
+	disasm = "";
 
 	unsigned char buf1[8] = { 0 };
 	unsigned char buf2[8] = { 0 };
@@ -103,7 +155,7 @@ bool findXorEaxRetn(ea_t address, ea_t endaddress)
 				// search in next 5 instructions for a RET
 				//
 				nInstructions = 0;
-				while ((address2 != BADADDR && address2 != address) && nInstructions < 10)
+				while ((address2 != BADADDR && address2 != address) && nInstructions < 5 && !fResult)
 				{
 					Disasm(address2, disasm2);
 					disasm += "\n";
@@ -111,10 +163,20 @@ bool findXorEaxRetn(ea_t address, ea_t endaddress)
 
 					if (get_many_bytes(address2, buf2, sizeof(buf2)))
 					{
-						if (buf2[0] == 0xE9)
+						//
+						// find mov eax, 0 and ignore this one because this manipulates our eax
+						//
+						if (findCommand(disasm2, "pop", "eax") ||
+							findCommand(disasm2, "lea", "eax,") ||
+							findCommand(disasm2, "mov", "eax,") ||
+							findCommand(disasm2, "xor", "eax,") ||
+							findCommand(disasm2, "test", "eax") ||
+							findCommand(disasm2, "call"))
 						{
 							break;
 						}
+
+
 						if (buf2[0] == 0xC3 || buf2[0] == 0xC2)
 						{
 							//msg("found: %a: \n%s", address, disasm);
@@ -132,20 +194,6 @@ bool findXorEaxRetn(ea_t address, ea_t endaddress)
 	}
 
 	return fResult;
-}
-
-bool findCommand(qstring &str, const char* szStr1)
-{
-	if (strstr(str.c_str(), szStr1) > 0)
-		return true;
-	return false;
-}
-
-bool findCommand(qstring &str, const char* szStr1, const char* szStr2)
-{
-	if (strstr(str.c_str(), szStr1) > 0 && strstr(str.c_str(), szStr2) > 0)
-		return true;
-	return false;
 }
 
 void idaapi run(int)
@@ -175,7 +223,7 @@ void idaapi run(int)
 
 		xrefblk_t xref;
 		int nCounter = 1;
-		qstring disasm;
+		qstring disasm, disasm_xoreax;
 		for (bool fOk = xref.first_to(pFunction->startEA, XREF_ALL); fOk; fOk = xref.next_to(), nCounter++)
 		{
 			//
@@ -192,7 +240,7 @@ void idaapi run(int)
 				{
 					//msg("found call: %u, %a - %a: %s\n", nCounter, xref.from, pCall->startEA, disasm.c_str());
 
-					if (findXorEaxRetn(pCall->startEA, pCall->endEA))
+					if (findXorEaxRetn(pCall->startEA, pCall->endEA, disasm_xoreax))
 					{
 						//msg("function: %s is returning with NULL ptr.\n", FunctionName.c_str());
 
@@ -203,7 +251,9 @@ void idaapi run(int)
 						//
 						ea_t newaddr = get_item_end(xref.from);
 
-						for (int x = 0; x < 10; x++)
+						int x = 0;
+
+						while (x < 10)
 						{
 							if (!Disasm(newaddr, disasm))
 								break;
@@ -211,10 +261,33 @@ void idaapi run(int)
 							//
 							// find mov eax, 0 and ignore this one because this manipulates our eax
 							//
-							if (findCommand(disasm, "lea", "eax,") ||
+							if (findCommand(disasm, "pop", "eax") ||
+								findCommand(disasm, "lea", "eax,") ||
 								findCommand(disasm, "mov", "eax,") ||
-								findCommand(disasm, "test", "eax"))
+								findCommand(disasm, "xor", "eax,") ||
+								findCommand(disasm, "test", "eax") ||
+								findCommand(disasm, "call"))
 							{
+								break;
+							}
+
+							if (findCommand(disasm, "jmp"))
+							{
+								//msg("following jump at %a\n", newaddr);
+
+								//
+								// follow the jump and reset the counter for search (uh uh, this is ugly)
+								//
+								ea_t jmpaddress = getJumpAddress(newaddr);
+								if (jmpaddress != BADADDR)
+								{
+									newaddr = jmpaddress;
+									x = 0;
+									continue;
+								}
+								//
+								// didnt worked, stop analyzing this function
+								//
 								break;
 							}
 
@@ -224,12 +297,14 @@ void idaapi run(int)
 							if (findCommand(disasm, "[eax +") ||
 								findCommand(disasm, "push", "eax"))
 							{
-								msg("function: %s ( %a ) is returning with NULL ptr\n", FunctionName.c_str(), pFunction->startEA);
-								msg("eax usage at: %a\n", newaddr);
+								msg("* function: %s ( %a ) is returning with NULL ptr:\n%s\n", FunctionName.c_str(), pFunction->startEA, disasm_xoreax.c_str());
+								msg("* eax usage at: %a\n\n", newaddr);
+							
 							}
 
 							newaddr = get_item_end(newaddr);
 
+							x++;
 						}
 					}
 				}
