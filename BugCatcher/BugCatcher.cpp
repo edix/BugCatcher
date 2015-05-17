@@ -122,7 +122,7 @@ bool findXorEax(ea_t address, ea_t endaddress)
 					address2 = get_item_end(address2);
 				}
 			}
-		}
+		} 
 		address = get_item_end(address);
 
 	}
