@@ -1,3 +1,20 @@
+//
+//
+// IDA Pro Auto Detect Bugs Plugin
+// Suche alle Funktionen.
+// Für jede Funktion hole die XREFs.
+// Überprüfe die Funktion ob sie folgendes(Beispiel) macht:
+//	xor eax, eax
+//	retn
+//
+//	Danach überprüfe ob direkt nach dem Funktionsaufruf folgender Befehl vorkommt :
+//		mov x, [eax + 0x04] oder sonstiges
+//	Falls ja, dann ist das ein Bug!
+// 
+// 
+//
+
+
 #include <ida.hpp>
 #include <idp.hpp>
 #include <loader.hpp>
@@ -52,21 +69,8 @@ bool Disasm(ea_t address, qstring& res)
 	return false;
 }
 
-//IDA Pro Auto Detect Bugs Plugin
-//Suche alle Funktionen.
-//Für jede Funktion hole die XREFs.
-//Überprüfe die Funktion ob sie folgendes(Beispiel) macht:
-//xor eax, eax
-//retn
-//
-//Danach überprüfe ob direkt nach dem Funktionsaufruf folgender Befehl vorkommt :
-//mov x, [eax + 0x04] oder sonstiges
-//
-//Falls ja, dann ist das ein Bug!
 
-
-
-bool findXorEax(ea_t address, ea_t endaddress)
+bool findXorEaxRetn(ea_t address, ea_t endaddress)
 {
 	//
 	// search for:
@@ -151,21 +155,18 @@ void idaapi run(int)
 		return;
 	}
 
+	msg("bug checker started.\n");
+
 	func_t* pFunction = nullptr;
 	std::string FunctionName;
 
 	for (size_t n = 0; n < get_func_qty(); n++)
 	{
 		pFunction = getn_func(n);
-		if (pFunction == nullptr)
-			continue;
-		if (!pFunction->does_return())
+		if (pFunction == nullptr || !pFunction->does_return())
 			continue;
 
 		FunctionName = GetFunctionName(pFunction->startEA);
-		
-		//msg("checking %s (start: %a - %a)\n", FunctionName.c_str(), pFunction->startEA, pFunction->endEA);
-
 	
 		//
 		// get all references to the function
@@ -179,40 +180,37 @@ void idaapi run(int)
 		{
 			//
 			// get the disassembly and remove the color tags
+			// then check if the reference is a call
 			//
 			Disasm(xref.from, disasm);
 
-			//
-			// only call's supported
-			//
 			if (strnicmp(disasm.c_str(), "call ", 5) == 0)
 			{
 
 				func_t* pCall = get_func(xref.from);
 				if (pCall != nullptr)
 				{
-
 					//msg("found call: %u, %a - %a: %s\n", nCounter, xref.from, pCall->startEA, disasm.c_str());
 
-					if (findXorEax(pCall->startEA, pCall->endEA))
+					if (findXorEaxRetn(pCall->startEA, pCall->endEA))
 					{
 						//msg("function: %s is returning with NULL ptr.\n", FunctionName.c_str());
 
-						// !! ok
+						//
 						// now try to to check next instruction of xref.from if it does something like:
-						// mov x, [eax + 0x04] oder sonstiges
+						// mov x, [eax + 0x04]
+						// 
+						//
 						ea_t newaddr = get_item_end(xref.from);
 
 						for (int x = 0; x < 10; x++)
 						{
 							if (!Disasm(newaddr, disasm))
 								break;
-
-							disasm = disasm.trim2();
-							disasm = disasm.ltrim();
-							disasm = disasm.rtrim();
 							
+							//
 							// find mov eax, 0 and ignore this one because this manipulates our eax
+							//
 							if (findCommand(disasm, "lea", "eax,") ||
 								findCommand(disasm, "mov", "eax,") ||
 								findCommand(disasm, "test", "eax"))
@@ -220,12 +218,16 @@ void idaapi run(int)
 								break;
 							}
 
+							//
+							// find some instructions which use eax
+							// 
 							if (findCommand(disasm, "[eax +") ||
 								findCommand(disasm, "push", "eax"))
 							{
 								msg("function: %s ( %a ) is returning with NULL ptr\n", FunctionName.c_str(), pFunction->startEA);
 								msg("eax usage at: %a\n", newaddr);
 							}
+
 							newaddr = get_item_end(newaddr);
 
 						}
@@ -252,8 +254,3 @@ plugin_t PLUGIN =
 	"ALT+F5"              // the preferred hotkey to run the plugin
 };
 
-
-//BOOL WINAPI DllMain(_In_ HINSTANCE hinstDLL, _In_ DWORD fdwReason, _In_ LPVOID lpvReserved)
-//{
-//	return 0;
-//}
