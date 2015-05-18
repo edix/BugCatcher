@@ -64,7 +64,8 @@ bool Disasm(ea_t address, qstring& res)
 	if (generate_disasm_line(address, szLine, sizeof(szLine)-1, GENDSM_MULTI_LINE))
 	{
 		tag_remove(szLine, szLine, sizeof(szLine)-1);
-		res = szLine;
+		res.cat_sprnt("%s - %x",  szLine, address);
+		//res = szLine;
 		return true;
 	}
 
